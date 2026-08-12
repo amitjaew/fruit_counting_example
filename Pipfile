@@ -10,6 +10,7 @@ opencv-python = "*"
 ultralytics = "*"
 torch = "*"
 matplotlib = "*"
+pyqt5 = "*"
 
 [dev-packages]
 
