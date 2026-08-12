@@ -320,12 +320,17 @@ def main():
                 assigned_dets.add(det_id)
     fruit_count = max_lid + 1 if assigned_dets else fruit_count
 
-    # Relabel sequential 0..N-1
-    unique = sorted(set(landmark_of.values()))
-    remap2 = {old: new for new, old in enumerate(unique)}
+    # Relabel by first-appearance order (fruit 0 = first seen, etc.)
+    first_frame: dict[int, str] = {}
+    for det_id, lid in landmark_of.items():
+        fname = det_id_to_frame.get(det_id, det_id.split(":")[0])
+        if lid not in first_frame or fname < first_frame[lid]:
+            first_frame[lid] = fname
+    ordered = sorted(set(landmark_of.values()), key=lambda l: first_frame[l])
+    remap2 = {old: new for new, old in enumerate(ordered)}
     for det_id in landmark_of:
         landmark_of[det_id] = remap2[landmark_of[det_id]]
-    fruit_count = len(unique)
+    fruit_count = len(ordered)
 
     print(f"  Total {fruit_count} fruits ({len(assigned_dets)} detections assigned)", file=sys.stderr)
 
