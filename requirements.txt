@@ -5,4 +5,3 @@ ultralytics
 torch
 matplotlib
 PyQt5
-faiss-gpu

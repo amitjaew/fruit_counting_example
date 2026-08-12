@@ -157,7 +157,7 @@ def partial_path(workspace: str, video_id: str) -> str:
     return os.path.join(workspace, "results", f"{video_id}.partial.npz")
 
 
-def save_partial(patches, masks, detections, frame_order, skipped,
+def save_partial(det_points, masks, detections, frame_order, skipped,
                  workspace, video_id, params):
     out_dir = os.path.join(workspace, "results")
     os.makedirs(out_dir, exist_ok=True)
@@ -165,9 +165,6 @@ def save_partial(patches, masks, detections, frame_order, skipped,
     json_path = os.path.join(out_dir, f"{video_id}.partial.json")
 
     arrays = {}
-    for det_id, pts in patches.items():
-        arrays[f"pts_{det_id}"] = pts.astype(np.float32)
-
     mask_keys = []
     for det_id, mask in masks.items():
         rle = _rle_encode(mask)
@@ -193,7 +190,7 @@ def save_partial(patches, masks, detections, frame_order, skipped,
         "detections": serializable_dets,
         "skipped_frames": skipped,
         "params": params,
-        "patch_keys": sorted([k for k in arrays if k.startswith("pts_")]),
+        "det_points": {det_id: sorted(pids) for det_id, pids in det_points.items()},
         "mask_keys": mask_keys,
     })
     with open(json_path, "w") as f:
@@ -208,18 +205,17 @@ def load_partial(workspace: str, video_id: str) -> dict | None:
     with open(json_path) as f:
         data = json.load(f)
     npz = np.load(npz_path, allow_pickle=True)
-    patches = {}
-    for key in data.get("patch_keys", []):
-        det_id = key[4:]
-        patches[det_id] = npz[key]
     masks = {}
     for det_id in data.get("mask_keys", []):
         rle_key = f"rle_{det_id}"
         size_key = f"rle_size_{det_id}"
         if rle_key in npz and size_key in npz:
             masks[det_id] = _rle_decode(npz[rle_key], tuple(npz[size_key]))
+    det_points = {}
+    for det_id, pids in data.get("det_points", {}).items():
+        det_points[det_id] = set(int(p) for p in pids)
     return {
-        "patches": patches,
+        "det_points": det_points,
         "masks": masks,
         "detections": data["detections"],
         "frame_order": data["frame_order"],
