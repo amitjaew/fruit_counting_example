@@ -2,3 +2,4 @@ sources/L0/*
 sources/L1/*
 sources/L2/*
 sources/*.mp4
+models/cacao-woord-13-yolo26l-seg-t1.pt
