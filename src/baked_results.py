@@ -151,3 +151,78 @@ def load_baked(workspace: str, video_id: str) -> BakedResults | None:
 
 def results_path(workspace: str, video_id: str) -> str:
     return os.path.join(workspace, "results", f"{video_id}.baked.npz")
+
+
+def partial_path(workspace: str, video_id: str) -> str:
+    return os.path.join(workspace, "results", f"{video_id}.partial.npz")
+
+
+def save_partial(patches, masks, detections, frame_order, skipped,
+                 workspace, video_id, params):
+    out_dir = os.path.join(workspace, "results")
+    os.makedirs(out_dir, exist_ok=True)
+    npz_path = partial_path(workspace, video_id)
+    json_path = os.path.join(out_dir, f"{video_id}.partial.json")
+
+    arrays = {}
+    for det_id, pts in patches.items():
+        arrays[f"pts_{det_id}"] = pts.astype(np.float32)
+
+    mask_keys = []
+    for det_id, mask in masks.items():
+        rle = _rle_encode(mask)
+        arrays[f"rle_{det_id}"] = rle
+        arrays[f"rle_size_{det_id}"] = np.array(mask.shape, dtype=np.uint32)
+        mask_keys.append(det_id)
+
+    np.savez_compressed(npz_path, **arrays)
+
+    serializable_dets = {}
+    for fname, det_list in detections.items():
+        sd_list = []
+        for d in det_list:
+            sd_list.append({
+                k: _to_native(v) for k, v in d.items()
+                if not isinstance(v, np.ndarray)
+            })
+        serializable_dets[fname] = sd_list
+
+    json_data = _to_native({
+        "video_id": video_id,
+        "frame_order": frame_order,
+        "detections": serializable_dets,
+        "skipped_frames": skipped,
+        "params": params,
+        "patch_keys": sorted([k for k in arrays if k.startswith("pts_")]),
+        "mask_keys": mask_keys,
+    })
+    with open(json_path, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+
+def load_partial(workspace: str, video_id: str) -> dict | None:
+    npz_path = partial_path(workspace, video_id)
+    json_path = os.path.join(workspace, "results", f"{video_id}.partial.json")
+    if not os.path.exists(npz_path) or not os.path.exists(json_path):
+        return None
+    with open(json_path) as f:
+        data = json.load(f)
+    npz = np.load(npz_path, allow_pickle=True)
+    patches = {}
+    for key in data.get("patch_keys", []):
+        det_id = key[4:]
+        patches[det_id] = npz[key]
+    masks = {}
+    for det_id in data.get("mask_keys", []):
+        rle_key = f"rle_{det_id}"
+        size_key = f"rle_size_{det_id}"
+        if rle_key in npz and size_key in npz:
+            masks[det_id] = _rle_decode(npz[rle_key], tuple(npz[size_key]))
+    return {
+        "patches": patches,
+        "masks": masks,
+        "detections": data["detections"],
+        "frame_order": data["frame_order"],
+        "skipped_frames": data["skipped_frames"],
+        "params": data["params"],
+    }

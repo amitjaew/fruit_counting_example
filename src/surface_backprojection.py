@@ -36,16 +36,19 @@ def backproject_mask_to_surface(mask: np.ndarray, frame: "Frame",
 
     vs, us = np.nonzero(eroded)
     d = frame.depth[vs, us]
-    valid = np.isfinite(d) & (d > 0)
+    valid = np.isfinite(d) & (d > 0.5) & (d < 5.0)
     us, vs, d = us[valid], vs[valid], d[valid]
     if len(d) < min_valid_px:
         return None
 
-    med = np.median(d)
-    mad = np.median(np.abs(d - med)) + 1e-6
-    keep = np.abs(d - med) < mad_k * 1.4826 * mad
+    bins = np.linspace(0.5, 5.0, 20)
+    hist, _ = np.histogram(d, bins=bins)
+    peak_bin = np.argmax(hist)
+    lo, hi = bins[peak_bin], bins[min(peak_bin + 1, len(bins) - 1)]
+    peak_centre = (lo + hi) / 2
+    keep = np.abs(d - peak_centre) < 0.5
     us, vs, d = us[keep], vs[keep], d[keep]
-    if len(d) < min_valid_px:
+    if len(d) < 5:
         return None
 
     K_inv = np.linalg.inv(frame.K)
@@ -57,4 +60,7 @@ def backproject_mask_to_surface(mask: np.ndarray, frame: "Frame",
 
 
 def robust_centroid(patch: np.ndarray) -> np.ndarray:
-    return np.median(patch, axis=0)
+    med_z = np.median(patch[:, 2])
+    mad_z = np.median(np.abs(patch[:, 2] - med_z)) + 1e-6
+    keep = np.abs(patch[:, 2] - med_z) < 2.0 * mad_z
+    return np.median(patch[keep], axis=0)

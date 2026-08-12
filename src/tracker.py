@@ -8,7 +8,7 @@ across frames to build per-fruit tracks for subsequent 3D back-projection.
 Algorithm:
   - For each frame, predict existing track positions with a Kalman filter.
   - Match detections to tracks via mask IoU.
-  - Unmatched tracks: coast for 3 frames, then terminate.
+  - Unmatched tracks: coast for N frames, then terminate.
   - Unmatched detections: spawn new tracks.
 """
 
@@ -100,7 +100,7 @@ def _compute_cost(tracks: list[Track], detections: list[dict], frame_shape: tupl
 def build_tracks(
     detections: dict[str, list[dict]],
     iou_threshold: float = 0.15,
-    max_coast_frames: int = 3,
+    max_coast_frames: int = 30,
 ) -> list[Track]:
     active_tracks: list[Track] = []
     finished_tracks: list[Track] = []
