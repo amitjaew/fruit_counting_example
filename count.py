@@ -191,7 +191,62 @@ def main():
     print(file=sys.stderr)
     fruit_count = merger.landmark_count()
     bp_time = time.time() - t0
-    print(f"  {fruit_count} unique fruits ({bp_time:.1f}s)", file=sys.stderr)
+    print(f"  {fruit_count} phase-1 landmarks ({bp_time:.1f}s)", file=sys.stderr)
+
+    # ---- Phase 2: greedy centroid merge for broken tracks ----
+    landmark_roots = set(merger.landmark_of(i) for i in range(len(merger.patches)))
+    lid_centroid = {}
+    lid_frames = {}
+    for root in landmark_roots:
+        pts_list, fset = [], set()
+        for i in range(len(merger.patches)):
+            if merger.landmark_of(i) == root:
+                pts_list.append(merger.patches[i])
+                fset |= merger.frame_sets[i]
+        if pts_list:
+            lid_centroid[root] = np.median(np.vstack(pts_list), axis=0)
+            lid_frames[root] = fset
+
+    pairs = []
+    roots = list(landmark_roots)
+    for i in range(len(roots)):
+        for j in range(i + 1, len(roots)):
+            dist = np.linalg.norm(lid_centroid[roots[i]] - lid_centroid[roots[j]])
+            pairs.append((dist, i, j))
+    pairs.sort()
+
+    centroid_merge_dist = 0.5
+    remap = {}
+    for dist, i, j in pairs:
+        if dist > centroid_merge_dist:
+            break
+        ra, rb = roots[i], roots[j]
+        while ra in remap:
+            ra = remap[ra]
+        while rb in remap:
+            rb = remap[rb]
+        if ra == rb:
+            continue
+        if lid_frames[ra] & lid_frames[rb]:
+            continue
+        remap[rb] = ra
+        lid_frames[ra] |= lid_frames[rb]
+
+    if remap:
+        for det_id in landmark_of:
+            lid = landmark_of[det_id]
+            while lid in remap:
+                lid = remap[lid]
+            landmark_of[det_id] = lid
+        fruit_count = len(set(landmark_of.values()))
+        print(f"  Merged {len(remap)} fragments, final: {fruit_count} fruits", file=sys.stderr)
+    else:
+        print(f"  No fragments to merge, final: {fruit_count} fruits", file=sys.stderr)
+
+    unique_lids = sorted(set(landmark_of.values()))
+    lid_map = {old: new for new, old in enumerate(unique_lids)}
+    for det_id in landmark_of:
+        landmark_of[det_id] = lid_map[landmark_of[det_id]]
 
     camera_positions = {}
     for fname, frame in frames.items():
