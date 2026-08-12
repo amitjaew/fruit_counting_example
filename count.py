@@ -47,6 +47,8 @@ def main():
                         help="Min 2D mask IoU for tracking (default: %(default)s)")
     parser.add_argument("--max-coast-frames", type=int, default=30,
                         help="Frames a track survives occlusion (default: %(default)s)")
+    parser.add_argument("--motion-max-dist", type=float, default=60.0,
+                        help="Max pixel distance for Kalman motion fallback match (default: %(default)s)")
     parser.add_argument("--centroid-merge-dist", type=float, default=0.5,
                         help="Centroid distance to re-merge broken tracks (default: %(default)s)")
     parser.add_argument("--conf", type=float, default=0.4, dest="conf_threshold",
@@ -218,6 +220,7 @@ def main():
         detections_for_tracker,
         iou_threshold=args.iou_threshold,
         max_coast_frames=args.max_coast_frames,
+        motion_max_dist=args.motion_max_dist,
     )
     print(f"  {len(tracks)} tracks ({time.time() - t0:.1f}s)", file=sys.stderr)
 
@@ -364,6 +367,7 @@ def main():
             "min_overlap_frac": args.min_overlap_frac,
             "iou_threshold": args.iou_threshold,
             "max_coast_frames": args.max_coast_frames,
+            "motion_max_dist": args.motion_max_dist,
             "centroid_merge_dist": args.centroid_merge_dist,
             "conf_threshold": args.conf_threshold,
             "min_area": args.min_area,

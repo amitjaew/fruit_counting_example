@@ -36,12 +36,12 @@ def backproject_mask_to_surface(mask: np.ndarray, frame: "Frame",
 
     vs, us = np.nonzero(eroded)
     d = frame.depth[vs, us]
-    valid = np.isfinite(d) & (d > 0.5) & (d < 5.0)
+    valid = np.isfinite(d) & (d > 0.2) & (d < 8.0)
     us, vs, d = us[valid], vs[valid], d[valid]
     if len(d) < min_valid_px:
         return None
 
-    bins = np.linspace(0.5, 5.0, 20)
+    bins = np.linspace(0.2, 8.0, 32)
     hist, _ = np.histogram(d, bins=bins)
     peak_bin = np.argmax(hist)
     lo, hi = bins[peak_bin], bins[min(peak_bin + 1, len(bins) - 1)]
