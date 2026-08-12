@@ -72,6 +72,8 @@ def main():
     total_dets = sum(len(d) for d in yolo_detections.values())
     print(f"  {total_dets} detections across {len(yolo_detections)} frames ({time.time() - t0:.1f}s)", file=sys.stderr)
 
+    print("Deduplicating overlapping detections...", file=sys.stderr)
+    dedup_removed = 0
     detections_for_tracker: dict[str, list[dict]] = {}
     all_detections: dict[str, list[dict]] = {}
     frame_order: list[str] = []
@@ -81,18 +83,53 @@ def main():
         frame_dets = yolo_detections.get(fname, [])
         flat_dets = []
         for d in frame_dets:
-            dd = {
+            flat_dets.append({
                 "frame_name": d.frame_name,
                 "mask": d.mask,
                 "bbox": d.bbox,
                 "class_name": d.class_name,
                 "confidence": d.confidence,
                 "det_id": d.det_id,
-            }
-            flat_dets.append(dd)
+            })
+
+        # Deduplicate overlapping detections within the same frame
+        n = len(flat_dets)
+        keep = [True] * n
+        for i in range(n):
+            if not keep[i]:
+                continue
+            for j in range(i + 1, n):
+                if not keep[j]:
+                    continue
+                a, b = flat_dets[i], flat_dets[j]
+                ma, mb = a["mask"], b["mask"]
+                # Pad masks to same size if needed
+                if ma.shape != mb.shape:
+                    h = max(ma.shape[0], mb.shape[0])
+                    w = max(ma.shape[1], mb.shape[1])
+                    pa = np.zeros((h, w), dtype=bool)
+                    pb = np.zeros((h, w), dtype=bool)
+                    pa[:ma.shape[0], :ma.shape[1]] = ma
+                    pb[:mb.shape[0], :mb.shape[1]] = mb
+                    ma, mb = pa, pb
+                inter = np.logical_and(ma, mb).sum()
+                union = np.logical_or(ma, mb).sum()
+                iou = inter / union if union > 0 else 0
+                if iou > 0.5:
+                    if a["confidence"] >= b["confidence"]:
+                        keep[j] = False
+                    else:
+                        keep[i] = False
+                        break  # this detection is removed, stop comparing it
+                    dedup_removed += 1
+
+        flat_dets = [d for d, k in zip(flat_dets, keep) if k]
         if flat_dets:
             detections_for_tracker[fname] = flat_dets
         all_detections[fname] = flat_dets
+
+    if dedup_removed > 0:
+        print(f"  Removed {dedup_removed} duplicate detections", file=sys.stderr)
 
     print("Building 2D tracks...", file=sys.stderr)
     t0 = time.time()
