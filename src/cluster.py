@@ -1,5 +1,5 @@
 """
-sparse_cluster.py
+cluster.py
 
 Clusters fruit detections by shared COLMAP sparse point IDs, with a
 same-frame constraint.

@@ -1,9 +1,8 @@
 """
-yolo_detector.py
+detector.py
 
 Runs YOLO26 instance segmentation on undistorted frames and produces
-per-frame Detection objects consumed by the tracker and back-projection
-pipeline.
+per-frame Detection objects consumed by the counting pipeline.
 """
 
 from dataclasses import dataclass

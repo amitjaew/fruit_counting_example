@@ -23,11 +23,10 @@ import time
 
 import numpy as np
 
-from src.colmap_reader import load_frames
-from src.yolo_detector import detect_all_frames, Detection
-from src.sparse_colmap import load_sparse, point_ids_in_mask
-from src.sparse_cluster import cluster_by_point_ids, merge_by_centroid
-from src.baked_results import (
+from src.colmap import load_colmap, point_ids_in_mask
+from src.detector import detect_all_frames
+from src.cluster import cluster_by_point_ids, merge_by_centroid
+from src.results import (
     BakedResults, save_baked, load_partial, save_partial, partial_path,
 )
 
@@ -57,6 +56,16 @@ def main():
     workspace = args.workspace
     video_id = args.video_id
 
+    # ---- Load COLMAP data once (poses + sparse points + observations) ----
+
+    print(f"Loading COLMAP data for {video_id}...", file=sys.stderr)
+    t0 = time.time()
+    frame_names, camera_positions, points3d, observations = load_colmap(workspace, video_id)
+    if not frame_names:
+        print(f"ERROR: No registered frames found for '{video_id}' in {workspace}", file=sys.stderr)
+        sys.exit(1)
+    print(f"  {len(frame_names)} frames, {len(points3d)} sparse points ({time.time() - t0:.1f}s)", file=sys.stderr)
+
     # ---- Load or run YOLO + sparse sampling ----
 
     partial = None if args.no_cache else load_partial(workspace, video_id)
@@ -67,20 +76,8 @@ def main():
         masks = partial["masks"]
         all_detections = partial["detections"]
         frame_order = partial["frame_order"]
-        skipped = partial["skipped_frames"]
         print(f"  {len(det_points)} detections with sparse points, {len(frame_order)} frames", file=sys.stderr)
     else:
-        print(f"Loading COLMAP sparse reconstruction for {video_id}...", file=sys.stderr)
-        t0 = time.time()
-        points3d, sparse_obs = load_sparse(workspace, video_id)
-        print(f"  {len(points3d)} sparse points, {len(sparse_obs)} frames ({time.time() - t0:.1f}s)", file=sys.stderr)
-
-        print(f"Loading camera poses for {video_id}...", file=sys.stderr)
-        frames, skipped = load_frames(workspace, video_id)
-        if not frames:
-            print(f"ERROR: No registered frames found for '{video_id}' in {workspace}", file=sys.stderr)
-            sys.exit(1)
-
         image_dir = os.path.join(workspace, video_id, "dense", "0", "images")
         if not os.path.isdir(image_dir):
             print(f"ERROR: Undistorted image directory not found: {image_dir}", file=sys.stderr)
@@ -102,7 +99,7 @@ def main():
         all_detections: dict[str, list[dict]] = {}
         frame_order: list[str] = []
 
-        for fname in sorted(frames.keys()):
+        for fname in frame_names:
             frame_order.append(fname)
             frame_dets = yolo_detections.get(fname, [])
             flat_dets = []
@@ -157,7 +154,7 @@ def main():
         n_frames = len(frame_order)
 
         for fi, fname in enumerate(frame_order):
-            obs = sparse_obs.get(fname)
+            obs = observations.get(fname)
             dets = all_detections.get(fname, [])
             for d in dets:
                 masks_for_bake[d["det_id"]] = d["mask"]
@@ -172,7 +169,7 @@ def main():
 
         masks = masks_for_bake
         save_partial(
-            det_points, masks, all_detections, frame_order, skipped,
+            det_points, masks, all_detections, frame_order,
             workspace, video_id,
             {"conf_threshold": args.conf_threshold, "min_area": args.min_area,
              "include_flowers": args.include_flowers},
@@ -183,8 +180,6 @@ def main():
 
     print(f"Clustering by shared sparse point IDs...", file=sys.stderr)
     t0 = time.time()
-
-    points3d, _ = load_sparse(workspace, video_id)
 
     det_frame: dict[str, str] = {}
     for fname in frame_order:
@@ -273,13 +268,6 @@ def main():
 
     # ---- Build baked results ----
 
-    print("Computing camera positions...", file=sys.stderr)
-    frames, skipped = load_frames(workspace, video_id)
-    camera_positions = {}
-    for fname, frame in frames.items():
-        cam_world = (-frame.R.T @ frame.t).tolist()
-        camera_positions[fname] = [float(v) for v in cam_world]
-
     # Build sparse 3D patches for visualization (det_id -> (N,3) world points)
     print("Building sparse 3D patches for visualization...", file=sys.stderr)
     patches: dict[str, np.ndarray] = {}
@@ -311,7 +299,6 @@ def main():
         masks=masks_for_bake,
         landmark_of=landmark_of,
         landmark_count=fruit_count,
-        skipped_frames=skipped,
         params={
             "min_shared_points": args.min_shared_points,
             "centroid_merge_dist": args.centroid_merge_dist,

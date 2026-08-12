@@ -23,7 +23,7 @@ import sys
 import cv2
 import numpy as np
 
-from src.baked_results import load_baked, results_path
+from src.results import load_baked, results_path
 
 
 def _make_palette(n: int) -> np.ndarray:

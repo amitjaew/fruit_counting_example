@@ -1,8 +1,8 @@
 """
-baked_results.py
+results.py
 
 Dataclass and serialization for the pipeline's intermediate results,
-shared between count.py (Mode 1) and view.py (Mode 2).
+shared between count.py (compute) and the viewer scripts.
 """
 
 import json
@@ -43,7 +43,6 @@ class BakedResults:
     masks: dict[str, np.ndarray] = field(default_factory=dict)
     landmark_of: dict[str, int] = field(default_factory=dict)
     landmark_count: int = 0
-    skipped_frames: list[str] = field(default_factory=list)
     params: dict = field(default_factory=dict)
     camera_positions: dict[str, list[float]] = field(default_factory=dict)
 
@@ -98,7 +97,6 @@ def save_baked(results: BakedResults, workspace: str):
         "detections": serializable_dets,
         "landmark_of": results.landmark_of,
         "landmark_count": results.landmark_count,
-        "skipped_frames": results.skipped_frames,
         "params": results.params,
         "camera_positions": results.camera_positions,
         "patch_keys": sorted([k for k in arrays if k.startswith("pts_")]),
@@ -143,7 +141,6 @@ def load_baked(workspace: str, video_id: str) -> BakedResults | None:
         masks=masks,
         landmark_of=json_data["landmark_of"],
         landmark_count=json_data["landmark_count"],
-        skipped_frames=json_data["skipped_frames"],
         params=json_data["params"],
         camera_positions=camera_positions,
     )
@@ -157,7 +154,7 @@ def partial_path(workspace: str, video_id: str) -> str:
     return os.path.join(workspace, "results", f"{video_id}.partial.npz")
 
 
-def save_partial(det_points, masks, detections, frame_order, skipped,
+def save_partial(det_points, masks, detections, frame_order,
                  workspace, video_id, params):
     out_dir = os.path.join(workspace, "results")
     os.makedirs(out_dir, exist_ok=True)
@@ -188,7 +185,6 @@ def save_partial(det_points, masks, detections, frame_order, skipped,
         "video_id": video_id,
         "frame_order": frame_order,
         "detections": serializable_dets,
-        "skipped_frames": skipped,
         "params": params,
         "det_points": {det_id: sorted(pids) for det_id, pids in det_points.items()},
         "mask_keys": mask_keys,
@@ -219,6 +215,5 @@ def load_partial(workspace: str, video_id: str) -> dict | None:
         "masks": masks,
         "detections": data["detections"],
         "frame_order": data["frame_order"],
-        "skipped_frames": data["skipped_frames"],
         "params": data["params"],
     }

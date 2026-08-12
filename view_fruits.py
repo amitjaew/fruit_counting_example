@@ -63,7 +63,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
-from src.baked_results import load_baked, results_path
+from src.results import load_baked, results_path
 
 
 def _make_palette(n: int) -> np.ndarray:
