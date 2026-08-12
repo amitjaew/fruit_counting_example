@@ -7,8 +7,11 @@ name = "pypi"
 numpy = "*"
 scipy = "*"
 opencv-python = "*"
+ultralytics = "*"
+torch = "*"
+matplotlib = "*"
 
 [dev-packages]
 
 [requires]
-python_version = "3.14"
+python_version = ">=3.12"
