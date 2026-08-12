@@ -3,7 +3,7 @@
 view_fruits.py — Per-fruit 3D diagnostic viewer.
 
 Usage:
-    python view_fruits.py --workspace WORKSPACE --video-id <id>
+    python view_fruits.py <id> [--workspace sources]
 
 Displays a 3D scatter plot of all surface patches for one fruit at a time.
 Camera positions for frames where the fruit was detected are shown as red markers.
@@ -173,9 +173,9 @@ def _run_gui(baked, palette):
     app.exec_()
 
 
-def _run_cli(baked, palette):
+def _run_cli(baked, palette, workspace):
     n_fruits = baked.landmark_count
-    results_dir = os.path.dirname(results_path("", baked.video_id)) or "results"
+    results_dir = os.path.dirname(results_path(workspace, baked.video_id))
     os.makedirs(results_dir, exist_ok=True)
 
     fig = plt.figure(figsize=(10, 8))
@@ -222,14 +222,14 @@ def _run_cli(baked, palette):
 
 def main():
     parser = argparse.ArgumentParser(description="Per-fruit 3D diagnostic viewer.")
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--video-id", required=True)
+    parser.add_argument("video_id", help="Video identifier (e.g. L0)")
+    parser.add_argument("--workspace", default="sources", help="Workspace root directory (default: %(default)s)")
     parser.add_argument("--cli", action="store_true", help="Force CLI mode even if display available")
     args = parser.parse_args()
 
     if not os.path.exists(results_path(args.workspace, args.video_id)):
         print(f"No baked results for '{args.video_id}'. Run:\n"
-              f"  python count.py --workspace {args.workspace} --video-id {args.video_id}\n"
+              f"  python count.py {args.video_id} --workspace {args.workspace}\n"
               f"before using view_fruits.py.", file=sys.stderr)
         sys.exit(1)
 
@@ -241,13 +241,13 @@ def main():
     palette = _make_palette(max(baked.landmark_count, 1))
 
     if args.cli:
-        _run_cli(baked, palette)
+        _run_cli(baked, palette, args.workspace)
         return
 
     if _backend is not None:
         _run_gui(baked, palette)
     else:
-        _run_cli(baked, palette)
+        _run_cli(baked, palette, args.workspace)
 
 
 if __name__ == "__main__":

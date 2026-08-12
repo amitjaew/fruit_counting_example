@@ -3,7 +3,7 @@
 view.py — Mode 2: 2D diagnostic overlay viewer.
 
 Usage:
-    python view.py --workspace WORKSPACE --video-id <id>
+    python view.py <id> [--workspace sources]
 
 Overlays YOLO segmentation masks onto undistorted frames with consistent
 per-fruit landmark IDs and colors. Displays in a PyQt window if available,
@@ -101,7 +101,7 @@ def _render_frame(baked, all_frame_dets, palette, image_dir, idx):
 
 # ---- PyQt5 GUI mode ----
 
-def _run_gui(baked, all_frame_dets, palette, image_dir):
+def _run_gui(baked, all_frame_dets, palette, image_dir, workspace):
     from PyQt5 import QtWidgets, QtGui, QtCore
 
     os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
@@ -164,7 +164,7 @@ def _run_gui(baked, all_frame_dets, palette, image_dir):
                     current_idx = idx
                     show_frame(current_idx)
         elif key in (QtCore.Qt.Key_O,):
-            _export_all(baked, all_frame_dets, palette, image_dir)
+            _export_all(baked, all_frame_dets, palette, image_dir, workspace)
         elif key in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
             app.quit()
 
@@ -176,8 +176,8 @@ def _run_gui(baked, all_frame_dets, palette, image_dir):
 
 # ---- CLI fallback ----
 
-def _export_all(baked, all_frame_dets, palette, image_dir):
-    results_dir = os.path.dirname(results_path("", baked.video_id)) or "results"
+def _export_all(baked, all_frame_dets, palette, image_dir, workspace):
+    results_dir = os.path.dirname(results_path(workspace, baked.video_id))
     export_dir = os.path.join(results_dir, f"{baked.video_id}_frames")
     os.makedirs(export_dir, exist_ok=True)
     frame_order = baked.frame_order
@@ -198,9 +198,9 @@ def _export_all(baked, all_frame_dets, palette, image_dir):
     print(f"  Exported {len(frame_order)} frames", flush=True)
 
 
-def _run_cli(baked, all_frame_dets, palette, image_dir):
+def _run_cli(baked, all_frame_dets, palette, image_dir, workspace):
     frame_order = baked.frame_order
-    results_dir = os.path.dirname(results_path("", baked.video_id)) or "results"
+    results_dir = os.path.dirname(results_path(workspace, baked.video_id))
     frame_png = os.path.join(results_dir, f"{baked.video_id}.frame.png")
     os.makedirs(results_dir, exist_ok=True)
 
@@ -242,7 +242,7 @@ def _run_cli(baked, all_frame_dets, palette, image_dir):
             else:
                 print(f"  Frame index out of range (1-{len(frame_order)})", flush=True)
         elif cmd in ("o", "export", "export_all"):
-            _export_all(baked, all_frame_dets, palette, image_dir)
+            _export_all(baked, all_frame_dets, palette, image_dir, workspace)
 
     print("Done.", file=sys.stderr)
 
@@ -251,14 +251,14 @@ def _run_cli(baked, all_frame_dets, palette, image_dir):
 
 def main():
     parser = argparse.ArgumentParser(description="2D diagnostic overlay viewer for baked fruit landmarks.")
-    parser.add_argument("--workspace", required=True)
-    parser.add_argument("--video-id", required=True)
+    parser.add_argument("video_id", help="Video identifier (e.g. L0)")
+    parser.add_argument("--workspace", default="sources", help="Workspace root directory (default: %(default)s)")
     parser.add_argument("--cli", action="store_true", help="Force CLI mode even if display available")
     args = parser.parse_args()
 
     if not os.path.exists(results_path(args.workspace, args.video_id)):
         print(f"No baked results for '{args.video_id}'. Run:\n"
-              f"  python count.py --workspace {args.workspace} --video-id {args.video_id}\n"
+              f"  python count.py {args.video_id} --workspace {args.workspace}\n"
               f"before using view.py.", file=sys.stderr)
         sys.exit(1)
 
@@ -275,15 +275,15 @@ def main():
         all_frame_dets[fname] = baked.detections.get(fname, [])
 
     if args.cli:
-        _run_cli(baked, all_frame_dets, palette, image_dir)
+        _run_cli(baked, all_frame_dets, palette, image_dir, args.workspace)
         return
 
     try:
         import PyQt5
-        _run_gui(baked, all_frame_dets, palette, image_dir)
+        _run_gui(baked, all_frame_dets, palette, image_dir, args.workspace)
     except ImportError:
         print("PyQt5 not available, falling back to CLI mode.", file=sys.stderr)
-        _run_cli(baked, all_frame_dets, palette, image_dir)
+        _run_cli(baked, all_frame_dets, palette, image_dir, args.workspace)
 
 
 if __name__ == "__main__":

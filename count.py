@@ -3,8 +3,8 @@
 count.py — Mode 1: compute and bake results.
 
 Usage:
-    python count.py --workspace WORKSPACE --video-id <id>
-                    [--min-shared-points 1] [--conf 0.4] [--min-area 100]
+    python count.py <id> [--workspace sources]
+                    [--min-shared-points 2] [--conf 0.4] [--min-area 100]
 
 Pipeline: YOLO -> dedup -> sample COLMAP sparse points inside each mask
 -> Union-Find clustering by shared point IDs.
@@ -36,8 +36,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Count unique cacao fruits from video using COLMAP sparse points + YOLO."
     )
-    parser.add_argument("--workspace", required=True, help="Workspace root directory")
-    parser.add_argument("--video-id", required=True, help="Video identifier (e.g. L0)")
+    parser.add_argument("video_id", help="Video identifier (e.g. L0)")
+    parser.add_argument("--workspace", default="sources", help="Workspace root directory (default: %(default)s)")
     parser.add_argument("--min-shared-points", type=int, default=2,
                         help="Min shared sparse point IDs to merge detections (default: %(default)s)")
     parser.add_argument("--centroid-merge-dist", type=float, default=0.4,
