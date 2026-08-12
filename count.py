@@ -31,12 +31,18 @@ def main():
     )
     parser.add_argument("--workspace", required=True, help="Workspace root directory")
     parser.add_argument("--video-id", required=True, help="Video identifier (e.g. L0)")
-    parser.add_argument("--eps", type=float, default=0.02, help="3D clustering distance threshold (meters)")
-    parser.add_argument("--min-overlap-frac", type=float, default=0.15, help="Min fraction of points in overlap")
-    parser.add_argument("--conf", type=float, default=0.4, dest="conf_threshold", help="YOLO confidence threshold")
-    parser.add_argument("--min-area", type=int, default=100, help="Minimum mask pixel area")
-    parser.add_argument("--include-flowers", action="store_true", help="Include cac-flor detections")
-    parser.add_argument("--model", default="models/cacao-woord-13-yolo26l-seg-t1.pt", help="Path to YOLO model weights")
+    parser.add_argument("--eps", type=float, default=0.02,
+                        help="3D clustering distance in meters (default: %(default)s)")
+    parser.add_argument("--min-overlap-frac", type=float, default=0.15,
+                        help="Min fraction of points that must overlap to merge (default: %(default)s)")
+    parser.add_argument("--conf", type=float, default=0.4, dest="conf_threshold",
+                        help="YOLO confidence threshold (default: %(default)s)")
+    parser.add_argument("--min-area", type=int, default=100,
+                        help="Minimum mask pixel area (default: %(default)s)")
+    parser.add_argument("--include-flowers", action="store_true",
+                        help="Include cac-flor detections (default: False)")
+    parser.add_argument("--model", default="models/cacao-woord-13-yolo26l-seg-t1.pt",
+                        help="Path to YOLO model weights (default: %(default)s)")
     args = parser.parse_args()
 
     workspace = args.workspace
@@ -90,12 +96,13 @@ def main():
 
     print("Building 2D tracks...", file=sys.stderr)
     t0 = time.time()
-    tracks = build_tracks(detections_for_tracker)
+    tracks = build_tracks(detections_for_tracker, iou_threshold=0.15, max_coast_frames=30)
     print(f"  {len(tracks)} tracks ({time.time() - t0:.1f}s)", file=sys.stderr)
 
     print("Back-projecting and merging landmarks...", file=sys.stderr)
     t0 = time.time()
     merger = LandmarkMerger(eps=args.eps, min_overlap_frac=args.min_overlap_frac)
+    rng = np.random.default_rng(42)
     patches: dict[str, np.ndarray] = {}
     landmark_of: dict[str, int] = {}
     det_lookup: dict[str, tuple[str, dict]] = {}
@@ -132,7 +139,11 @@ def main():
 
         if track_patches:
             combined = np.vstack(track_patches)
-            patch_idx = merger.add(combined)
+            if len(combined) > 500:
+                idx_sample = rng.choice(len(combined), size=500, replace=False)
+                combined = combined[idx_sample]
+            track_frames = {det_lookup[did][0] for did in track_det_ids if did in det_lookup}
+            patch_idx = merger.add(combined, frames=track_frames)
             landmark_id = merger.landmark_of(patch_idx)
             for det_id in track_det_ids:
                 landmark_of[det_id] = landmark_id
@@ -151,6 +162,7 @@ def main():
         camera_positions[fname] = [float(v) for v in cam_world]
 
     serializable_detections = {}
+    masks_for_bake = {}
     for fname, det_list in all_detections.items():
         sd_list = []
         for d in det_list:
@@ -161,6 +173,7 @@ def main():
                 "confidence": d["confidence"],
                 "det_id": d["det_id"],
             })
+            masks_for_bake[d["det_id"]] = d["mask"]
         serializable_detections[fname] = sd_list
 
     results = BakedResults(
@@ -168,6 +181,7 @@ def main():
         frame_order=frame_order,
         detections=serializable_detections,
         patches=patches,
+        masks=masks_for_bake,
         landmark_of=landmark_of,
         landmark_count=fruit_count,
         skipped_frames=skipped,

@@ -2,7 +2,7 @@
 baked_results.py
 
 Dataclass and serialization for the pipeline's intermediate results,
-shared between count.py (Mode 1) and inspect.py (Mode 2).
+shared between count.py (Mode 1) and view.py (Mode 2).
 """
 
 import json
@@ -12,16 +12,39 @@ from dataclasses import dataclass, field
 import numpy as np
 
 
+def _rle_encode(mask: np.ndarray) -> np.ndarray:
+    flat = mask.ravel()
+    transitions = np.diff(np.concatenate([[0], flat.astype(np.int8), [0]]))
+    starts = np.where(transitions == 1)[0]
+    ends = np.where(transitions == -1)[0]
+    lengths = ends - starts
+    rle = np.empty(len(starts) * 2, dtype=np.uint32)
+    rle[0::2] = starts
+    rle[1::2] = lengths
+    return rle
+
+
+def _rle_decode(rle: np.ndarray, size: tuple) -> np.ndarray:
+    h, w = int(size[0]), int(size[1])
+    flat = np.zeros(h * w, dtype=bool)
+    for i in range(0, len(rle), 2):
+        start = rle[i]
+        length = rle[i + 1]
+        flat[start:start + length] = True
+    return flat.reshape(h, w)
+
+
 @dataclass
 class BakedResults:
     video_id: str
     frame_order: list[str]
     detections: dict[str, list[dict]]
     patches: dict[str, np.ndarray]
-    landmark_of: dict[str, int]
-    landmark_count: int
-    skipped_frames: list[str]
-    params: dict
+    masks: dict[str, np.ndarray] = field(default_factory=dict)
+    landmark_of: dict[str, int] = field(default_factory=dict)
+    landmark_count: int = 0
+    skipped_frames: list[str] = field(default_factory=list)
+    params: dict = field(default_factory=dict)
     camera_positions: dict[str, list[float]] = field(default_factory=dict)
 
 
@@ -45,11 +68,19 @@ def save_baked(results: BakedResults, workspace: str):
     npz_path = os.path.join(out_dir, f"{results.video_id}.baked.npz")
     json_path = os.path.join(out_dir, f"{results.video_id}.baked.json")
 
-    patches_flat = {}
-    for det_id, pts in results.patches.items():
-        patches_flat[f"pts_{det_id}"] = pts.astype(np.float32)
+    arrays = {}
 
-    np.savez_compressed(npz_path, **patches_flat)
+    for det_id, pts in results.patches.items():
+        arrays[f"pts_{det_id}"] = pts.astype(np.float32)
+
+    mask_keys = []
+    for det_id, mask in results.masks.items():
+        rle = _rle_encode(mask)
+        arrays[f"rle_{det_id}"] = rle
+        arrays[f"rle_size_{det_id}"] = np.array(mask.shape, dtype=np.uint32)
+        mask_keys.append(det_id)
+
+    np.savez_compressed(npz_path, **arrays)
 
     serializable_dets = {}
     for fname, det_list in results.detections.items():
@@ -70,7 +101,8 @@ def save_baked(results: BakedResults, workspace: str):
         "skipped_frames": results.skipped_frames,
         "params": results.params,
         "camera_positions": results.camera_positions,
-        "patch_keys": sorted(patches_flat.keys()),
+        "patch_keys": sorted([k for k in arrays if k.startswith("pts_")]),
+        "mask_keys": mask_keys,
     })
     with open(json_path, "w") as f:
         json.dump(json_data, f, indent=2)
@@ -87,10 +119,19 @@ def load_baked(workspace: str, video_id: str) -> BakedResults | None:
         json_data = json.load(f)
 
     npz = np.load(npz_path, allow_pickle=True)
+
     patches = {}
-    for key in json_data["patch_keys"]:
+    for key in json_data.get("patch_keys", []):
         det_id = key[4:]
         patches[det_id] = npz[key]
+
+    masks = {}
+    for det_id in json_data.get("mask_keys", []):
+        rle_key = f"rle_{det_id}"
+        size_key = f"rle_size_{det_id}"
+        if rle_key in npz and size_key in npz:
+            size = tuple(npz[size_key])
+            masks[det_id] = _rle_decode(npz[rle_key], size)
 
     camera_positions = json_data.get("camera_positions", {})
 
@@ -99,6 +140,7 @@ def load_baked(workspace: str, video_id: str) -> BakedResults | None:
         frame_order=json_data["frame_order"],
         detections=json_data["detections"],
         patches=patches,
+        masks=masks,
         landmark_of=json_data["landmark_of"],
         landmark_count=json_data["landmark_count"],
         skipped_frames=json_data["skipped_frames"],

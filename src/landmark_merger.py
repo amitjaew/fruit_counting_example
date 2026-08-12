@@ -23,11 +23,15 @@ def patches_overlap(patch_a: np.ndarray, patch_b: np.ndarray,
 class LandmarkMerger:
     """Union-Find over per-track surface patches -> final fruit count."""
 
-    def __init__(self, eps: float, min_overlap_frac: float = 0.15):
+    def __init__(self, eps: float, min_overlap_frac: float = 0.15,
+                 centroid_filter_dist: float = 0.3):
         self.eps = eps
         self.min_overlap_frac = min_overlap_frac
+        self.centroid_filter_dist = centroid_filter_dist
         self.patches = []
         self.parent = []
+        self.centroids = []
+        self.frame_sets = []
 
     def _find(self, i):
         while self.parent[i] != i:
@@ -39,12 +43,22 @@ class LandmarkMerger:
         ri, rj = self._find(i), self._find(j)
         if ri != rj:
             self.parent[rj] = ri
+            self.frame_sets[ri] |= self.frame_sets[rj]
 
-    def add(self, patch: np.ndarray) -> int:
+    def add(self, patch: np.ndarray, frames: set | None = None) -> int:
+        centroid = np.median(patch, axis=0)
         idx = len(self.patches)
         self.patches.append(patch)
         self.parent.append(idx)
+        self.centroids.append(centroid)
+        self.frame_sets.append(frames or set())
+
         for j in range(idx):
+            if self.frame_sets[j] & self.frame_sets[idx]:
+                continue
+            dist = np.linalg.norm(self.centroids[j] - centroid)
+            if dist > self.centroid_filter_dist:
+                continue
             if patches_overlap(self.patches[j], patch, self.eps, self.min_overlap_frac):
                 self._union(j, idx)
         return idx

@@ -1,38 +1,259 @@
 #!/usr/bin/env python3
 """
-view.py — Mode 2: interactive 3D debug viewer.
+view.py — Mode 2: 2D diagnostic overlay viewer.
 
 Usage:
     python view.py --workspace WORKSPACE --video-id <id>
 
-Requires baked results from count.py to exist.
-Left/Right arrows: step through frames.
-Escape: exit.
+Overlays YOLO segmentation masks onto undistorted frames with consistent
+per-fruit landmark IDs and colors. Displays in a PyQt window if available,
+falls back to CLI image export otherwise.
+
+GUI controls:
+    Left/Right arrows   previous / next frame
+    Number keys         jump to frame (multi-digit: type then press Enter)
+    O                   export all frames as annotated PNGs
+    Escape / Q          quit
 """
 
 import argparse
 import os
 import sys
 
+import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backend_bases import KeyEvent
-from mpl_toolkits.mplot3d import Axes3D
 
 from src.baked_results import load_baked, results_path
-from src.surface_backprojection import robust_centroid
 
 
 def _make_palette(n: int) -> np.ndarray:
     rng = np.random.default_rng(42)
-    return rng.uniform(0.3, 0.9, size=(n, 3))
+    return rng.uniform(80, 220, size=(n, 3)).astype(np.uint8)
 
+
+def _mask_centroid(mask: np.ndarray) -> tuple[int, int]:
+    ys, xs = np.nonzero(mask)
+    if len(ys) == 0:
+        return 0, 0
+    return int(xs.mean()), int(ys.mean())
+
+
+def _annotate_frame(img: np.ndarray, frame_dets: list[dict], masks: dict,
+                    landmark_of: dict, palette: np.ndarray) -> np.ndarray:
+    out = img.copy()
+    overlay = out.copy()
+    h, w = img.shape[:2]
+
+    for det in frame_dets:
+        det_id = det["det_id"]
+        lid = landmark_of.get(det_id)
+        mask = masks.get(det_id)
+        if lid is None or mask is None:
+            continue
+
+        color = palette[lid % len(palette)]
+        color_bgr = (int(color[2]), int(color[1]), int(color[0]))
+
+        mh, mw = mask.shape
+        if mh > h:
+            mask = mask[:h, :]
+        if mw > w:
+            mask = mask[:, :w]
+
+        overlay[mask] = color_bgr
+        cx, cy = _mask_centroid(mask)
+        cv2.putText(out, str(lid), (cx - 8, cy + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+
+    out = cv2.addWeighted(out, 0.45, overlay, 0.55, 0)
+    return out
+
+
+def _draw_info_bar(img: np.ndarray, current_idx: int, n_frames: int,
+                   fname: str, n_dets: int, total_fruits: int) -> np.ndarray:
+    h, w = img.shape[:2]
+    bar_h = 40
+    bar = np.zeros((bar_h, w, 3), dtype=np.uint8)
+    bar[:] = (40, 40, 40)
+
+    text = f"[{current_idx + 1}/{n_frames}]  {fname}  |  detections: {n_dets}  |  total fruits: {total_fruits}"
+    cv2.putText(bar, text, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA)
+
+    return np.vstack([bar, img])
+
+
+def _render_frame(baked, all_frame_dets, palette, image_dir, idx):
+    frame_order = baked.frame_order
+    fname = frame_order[idx]
+    img_path = os.path.join(image_dir, fname)
+    if not os.path.exists(img_path):
+        return None, fname, 0
+
+    img = cv2.imread(img_path)
+    if img is None:
+        return None, fname, 0
+
+    dets = all_frame_dets.get(fname, [])
+    img = _annotate_frame(img, dets, baked.masks, baked.landmark_of, palette)
+    img = _draw_info_bar(img, idx, len(frame_order), fname, len(dets), baked.landmark_count)
+    return img, fname, len(dets)
+
+
+# ---- PyQt5 GUI mode ----
+
+def _run_gui(baked, all_frame_dets, palette, image_dir):
+    from PyQt5 import QtWidgets, QtGui, QtCore
+
+    os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    os.environ["QT_PLUGIN_PATH"] = QtCore.QLibraryInfo.location(
+        QtCore.QLibraryInfo.PluginsPath
+    )
+
+    app = QtWidgets.QApplication(sys.argv)
+    frame_order = baked.frame_order
+
+    window = QtWidgets.QLabel()
+    window.setWindowTitle(f"Cacao Fruit Viewer — {baked.video_id} ({baked.landmark_count} fruits)")
+    window.setAlignment(QtCore.Qt.AlignCenter)
+    window.setMinimumSize(600, 400)
+
+    current_idx = 0
+    digit_buffer = ""
+
+    def show_frame(idx):
+        nonlocal digit_buffer
+        img, fname, n_dets = _render_frame(baked, all_frame_dets, palette, image_dir, idx)
+        if img is None:
+            return
+        h, w, c = img.shape
+        bytes_per_line = 3 * w
+        qimg = QtGui.QImage(img.data, w, h, bytes_per_line, QtGui.QImage.Format_BGR888)
+        pixmap = QtGui.QPixmap.fromImage(qimg)
+
+        screen = app.primaryScreen().availableGeometry()
+        max_w = screen.width() * 0.85
+        max_h = screen.height() * 0.85
+        if pixmap.width() > max_w or pixmap.height() > max_h:
+            pixmap = pixmap.scaled(int(max_w), int(max_h),
+                                   QtCore.Qt.KeepAspectRatio,
+                                   QtCore.Qt.SmoothTransformation)
+
+        window.setPixmap(pixmap)
+        window.setWindowTitle(f"[{idx + 1}/{len(frame_order)}] {fname}  "
+                              f"detections: {n_dets}  |  total fruits: {baked.landmark_count}")
+
+    def on_key(event: QtGui.QKeyEvent):
+        nonlocal current_idx, digit_buffer
+        key = event.key()
+
+        if key in (QtCore.Qt.Key_Right, QtCore.Qt.Key_N):
+            if current_idx < len(frame_order) - 1:
+                current_idx += 1
+                show_frame(current_idx)
+        elif key in (QtCore.Qt.Key_Left, QtCore.Qt.Key_P):
+            if current_idx > 0:
+                current_idx -= 1
+                show_frame(current_idx)
+        elif QtCore.Qt.Key_0 <= key <= QtCore.Qt.Key_9:
+            digit_buffer += chr(key)
+        elif key in (QtCore.Qt.Key_Return, QtCore.Qt.Key_Enter):
+            if digit_buffer:
+                idx = int(digit_buffer) - 1
+                digit_buffer = ""
+                if 0 <= idx < len(frame_order):
+                    current_idx = idx
+                    show_frame(current_idx)
+        elif key in (QtCore.Qt.Key_O,):
+            _export_all(baked, all_frame_dets, palette, image_dir)
+        elif key in (QtCore.Qt.Key_Q, QtCore.Qt.Key_Escape):
+            app.quit()
+
+    window.keyPressEvent = on_key
+    show_frame(current_idx)
+    window.show()
+    app.exec_()
+
+
+# ---- CLI fallback ----
+
+def _export_all(baked, all_frame_dets, palette, image_dir):
+    results_dir = os.path.dirname(results_path("", baked.video_id)) or "results"
+    export_dir = os.path.join(results_dir, f"{baked.video_id}_frames")
+    os.makedirs(export_dir, exist_ok=True)
+    frame_order = baked.frame_order
+    print(f"Exporting {len(frame_order)} annotated frames to {export_dir}/ ...",
+          file=sys.stderr)
+    for i, fname in enumerate(frame_order):
+        img_path = os.path.join(image_dir, fname)
+        if os.path.exists(img_path):
+            img = cv2.imread(img_path)
+            if img is not None:
+                dets = all_frame_dets.get(fname, [])
+                img = _annotate_frame(img, dets, baked.masks, baked.landmark_of, palette)
+                img = _draw_info_bar(img, i, len(frame_order), fname, len(dets), baked.landmark_count)
+                cv2.imwrite(os.path.join(export_dir, fname), img)
+        if (i + 1) % 50 == 0 and i > 0:
+            print(f"\r  {i+1}/{len(frame_order)}", end="", flush=True, file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"  Exported {len(frame_order)} frames", flush=True)
+
+
+def _run_cli(baked, all_frame_dets, palette, image_dir):
+    frame_order = baked.frame_order
+    results_dir = os.path.dirname(results_path("", baked.video_id)) or "results"
+    frame_png = os.path.join(results_dir, f"{baked.video_id}.frame.png")
+    os.makedirs(results_dir, exist_ok=True)
+
+    current_idx = 0
+
+    def save_frame(idx):
+        img, fname, n_dets = _render_frame(baked, all_frame_dets, palette, image_dir, idx)
+        if img is None:
+            return
+        cv2.imwrite(frame_png, img)
+        print(f"\r[{idx + 1}/{len(frame_order)}] {fname}  "
+              f"detections: {n_dets}  →  {frame_png}", flush=True)
+
+    save_frame(current_idx)
+    print("\nCommands: n/Enter=next  p=prev  <number>=jump  o=export_all  q=quit")
+
+    while True:
+        try:
+            cmd = input("> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if cmd in ("q", "quit", "exit"):
+            break
+        elif cmd == "" or cmd in ("n", "next"):
+            if current_idx < len(frame_order) - 1:
+                current_idx += 1
+                save_frame(current_idx)
+        elif cmd in ("p", "prev"):
+            if current_idx > 0:
+                current_idx -= 1
+                save_frame(current_idx)
+        elif cmd.isdigit():
+            idx = int(cmd) - 1
+            if 0 <= idx < len(frame_order):
+                current_idx = idx
+                save_frame(current_idx)
+            else:
+                print(f"  Frame index out of range (1-{len(frame_order)})", flush=True)
+        elif cmd in ("o", "export", "export_all"):
+            _export_all(baked, all_frame_dets, palette, image_dir)
+
+    print("Done.", file=sys.stderr)
+
+
+# ---- Entry point ----
 
 def main():
-    parser = argparse.ArgumentParser(description="Interactive 3D viewer for baked fruit landmarks.")
+    parser = argparse.ArgumentParser(description="2D diagnostic overlay viewer for baked fruit landmarks.")
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--video-id", required=True)
-    parser.add_argument("--export-camera-path", type=str, default=None, help="Export static camera path PNG")
+    parser.add_argument("--cli", action="store_true", help="Force CLI mode even if display available")
     args = parser.parse_args()
 
     if not os.path.exists(results_path(args.workspace, args.video_id)):
@@ -46,123 +267,23 @@ def main():
         print(f"Failed to load baked results for '{args.video_id}'.", file=sys.stderr)
         sys.exit(1)
 
-    landmark_colors = _make_palette(max(baked.landmark_count, 1))
-    centroid_cache: dict[int, np.ndarray] = {}
-    landmark_patches: dict[int, list[np.ndarray]] = {}
+    image_dir = os.path.join(args.workspace, args.video_id, "dense", "0", "images")
+    palette = _make_palette(max(baked.landmark_count, 1))
 
-    for det_id, landmark_id in baked.landmark_of.items():
-        landmark_patches.setdefault(landmark_id, []).append(baked.patches.get(det_id, np.empty((0, 3))))
+    all_frame_dets = {}
+    for fname in baked.frame_order:
+        all_frame_dets[fname] = baked.detections.get(fname, [])
 
-    for lid, pt_list in landmark_patches.items():
-        combined = np.vstack([p for p in pt_list if len(p) > 0]) if pt_list else np.empty((0, 3))
-        if len(combined) > 0:
-            centroid_cache[lid] = robust_centroid(combined)
+    if args.cli:
+        _run_cli(baked, all_frame_dets, palette, image_dir)
+        return
 
-    frame_order = baked.frame_order
-
-    fig = plt.figure(figsize=(12, 9))
-    ax: Axes3D = fig.add_subplot(111, projection="3d")
-
-    current_idx = 0
-    view_elev = 20
-    view_azim = -60
-
-    def get_frame_det_ids(fname: str) -> set[int]:
-        ids = set()
-        for det_id, lid in baked.landmark_of.items():
-            if det_id.startswith(fname + ":"):
-                ids.add(lid)
-        return ids
-
-    def render():
-        nonlocal view_elev, view_azim
-        ax.clear()
-        fname = frame_order[current_idx]
-        active_landmarks = get_frame_det_ids(fname)
-
-        all_pts_by_landmark: dict[int, np.ndarray] = {}
-        for det_id, lid in baked.landmark_of.items():
-            pts = baked.patches.get(det_id)
-            if pts is not None and len(pts) > 0:
-                all_pts_by_landmark.setdefault(lid, []).append(pts)
-
-        for lid, pt_lists in all_pts_by_landmark.items():
-            combined = np.vstack(pt_lists)
-            if len(combined) == 0:
-                continue
-            if len(combined) > 500:
-                idx_sample = np.random.default_rng(lid).choice(len(combined), size=500, replace=False)
-                combined = combined[idx_sample]
-
-            color = landmark_colors[lid % len(landmark_colors)]
-            is_active = lid in active_landmarks
-            alpha = 0.6 if is_active else 0.12
-            size = 4 if is_active else 1.5
-
-            ax.scatter(combined[:, 0], combined[:, 1], combined[:, 2],
-                       c=[color], s=size, alpha=alpha, marker="o", edgecolors="none")
-
-            if is_active and lid in centroid_cache:
-                c = centroid_cache[lid]
-                ax.text(c[0], c[1], c[2], str(lid), fontsize=7, color="black")
-
-        if fname in baked.camera_positions:
-            cp = baked.camera_positions[fname]
-            ax.scatter([cp[0]], [cp[1]], [cp[2]], c="red", s=80, marker="^", label=f"Camera {fname}")
-
-        n_dets = len(get_frame_det_ids(fname))
-        ax.set_title(f"{fname}  [{current_idx + 1}/{len(frame_order)}]  "
-                     f"detections: {n_dets}  total fruits: {baked.landmark_count}",
-                     fontsize=11)
-
-        ax.set_xlabel("X (m)")
-        ax.set_ylabel("Y (m)")
-        ax.set_zlabel("Z (m)")
-
-        if hasattr(render, "_initial_view"):
-            ax.view_init(elev=view_elev, azim=view_azim)
-        else:
-            ax.view_init(elev=20, azim=-60)
-            render._initial_view = True
-
-        fig.canvas.draw_idle()
-
-    def on_key(event: KeyEvent):
-        nonlocal current_idx, view_elev, view_azim
-        if event.key == "right":
-            current_idx = min(current_idx + 1, len(frame_order) - 1)
-            view_elev = ax.elev
-            view_azim = ax.azim
-            render()
-        elif event.key == "left":
-            current_idx = max(current_idx - 1, 0)
-            view_elev = ax.elev
-            view_azim = ax.azim
-            render()
-        elif event.key == "escape":
-            plt.close(fig)
-
-    render()
-
-    if args.export_camera_path:
-        ax.clear()
-        all_cam_positions = []
-        for fname in frame_order:
-            if fname in baked.camera_positions:
-                all_cam_positions.append(baked.camera_positions[fname])
-        if all_cam_positions:
-            all_cam_positions_arr = np.array(all_cam_positions)
-            ax.scatter(all_cam_positions_arr[:, 0], all_cam_positions_arr[:, 1],
-                       all_cam_positions_arr[:, 2], c="red", s=10, alpha=0.7)
-            ax.plot(all_cam_positions_arr[:, 0], all_cam_positions_arr[:, 1],
-                    all_cam_positions_arr[:, 2], "gray", alpha=0.3, linewidth=0.5)
-            ax.set_title(f"Camera path — {baked.video_id} ({len(all_cam_positions)} views)")
-            fig.savefig(args.export_camera_path, dpi=150, bbox_inches="tight")
-            print(f"Camera path exported to {args.export_camera_path}", file=sys.stderr)
-
-    if not args.export_camera_path:
-        fig.canvas.mpl_connect("key_press_event", on_key)
-        plt.show()
+    try:
+        import PyQt5
+        _run_gui(baked, all_frame_dets, palette, image_dir)
+    except ImportError:
+        print("PyQt5 not available, falling back to CLI mode.", file=sys.stderr)
+        _run_cli(baked, all_frame_dets, palette, image_dir)
 
 
 if __name__ == "__main__":
