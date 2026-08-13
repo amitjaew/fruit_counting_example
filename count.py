@@ -25,7 +25,7 @@ import numpy as np
 
 from src.colmap import load_colmap, point_ids_in_mask
 from src.detector import detect_all_frames
-from src.cluster import cluster_by_point_ids, merge_by_centroid
+from src.cluster import cluster_by_point_ids, merge_by_centroid, split_overmerged, resolve_candidates
 from src.results import (
     BakedResults, save_baked, load_partial, save_partial, partial_path,
 )
@@ -41,6 +41,18 @@ def main():
                         help="Min shared sparse point IDs to merge detections (default: %(default)s)")
     parser.add_argument("--centroid-merge-dist", type=float, default=0.4,
                         help="Sparse centroid distance to re-merge gap-fragmented fruits (default: %(default)s)")
+    parser.add_argument("--single-frame-min-conf", type=float, default=0.25,
+                        help="Min confidence to keep a single-frame (non-small) detection (default: %(default)s)")
+    parser.add_argument("--correlation-eps", type=float, default=0.3,
+                        help="Median point distance to merge a candidate into a confirmed fruit (default: %(default)s)")
+    parser.add_argument("--split-eps", type=float, default=0.15,
+                        help="DBSCAN eps for detecting over-merged (bimodal) fruits (default: %(default)s)")
+    parser.add_argument("--split-min-pts", type=int, default=5,
+                        help="DBSCAN min points for over-merge detection (default: %(default)s)")
+    parser.add_argument("--split-min-cluster-size", type=int, default=50,
+                        help="Min points for a cluster to count as a real sub-fruit (default: %(default)s)")
+    parser.add_argument("--split-min-dist", type=float, default=0.5,
+                        help="Min centroid separation to trigger a split (default: %(default)s)")
     parser.add_argument("--conf", type=float, default=0.4, dest="conf_threshold",
                         help="YOLO confidence threshold (default: %(default)s)")
     parser.add_argument("--min-area", type=int, default=100,
@@ -251,6 +263,43 @@ def main():
         fruit_count = len(set(landmark_of.values()))
         print(f"  {fruit_count} fruits after centroid re-merge", file=sys.stderr)
 
+    # ---- Split over-merged (bimodal) fruits ----
+
+    print(f"Splitting over-merged fruits (eps={args.split_eps}m)...", file=sys.stderr)
+    landmark_of = split_overmerged(
+        landmark_of, det_points, det_frame, points3d,
+        split_eps=args.split_eps,
+        split_min_pts=args.split_min_pts,
+        split_min_cluster_size=args.split_min_cluster_size,
+        split_min_dist=args.split_min_dist,
+    )
+    n_after_split = len(set(landmark_of.values()))
+    if n_after_split > fruit_count:
+        print(f"  split {n_after_split - fruit_count} fruits -> {n_after_split} fruits", file=sys.stderr)
+    else:
+        print(f"  no splits -> {n_after_split} fruits", file=sys.stderr)
+    fruit_count = n_after_split
+
+    # ---- Resolve single-frame candidates (filter false positives + merge fragments) ----
+
+    print("Resolving single-frame candidates...", file=sys.stderr)
+    det_class = {}
+    det_conf = {}
+    for fname, det_list in all_detections.items():
+        for d in det_list:
+            det_class[d["det_id"]] = d["class_name"]
+            det_conf[d["det_id"]] = d["confidence"]
+
+    n_before = len(landmark_of)
+    landmark_of = resolve_candidates(
+        landmark_of, det_points, det_frame, points3d, det_class, det_conf,
+        single_frame_min_conf=args.single_frame_min_conf,
+        correlation_eps=args.correlation_eps,
+    )
+    n_after = len(landmark_of)
+    fruit_count = len(set(landmark_of.values()))
+    print(f"  discarded {n_before - n_after} detections, {fruit_count} fruits remain", file=sys.stderr)
+
     # ---- Relabel by first-appearance order ----
 
     first_frame: dict[int, str] = {}
@@ -302,6 +351,12 @@ def main():
         params={
             "min_shared_points": args.min_shared_points,
             "centroid_merge_dist": args.centroid_merge_dist,
+            "single_frame_min_conf": args.single_frame_min_conf,
+            "correlation_eps": args.correlation_eps,
+            "split_eps": args.split_eps,
+            "split_min_pts": args.split_min_pts,
+            "split_min_cluster_size": args.split_min_cluster_size,
+            "split_min_dist": args.split_min_dist,
             "conf_threshold": args.conf_threshold,
             "min_area": args.min_area,
             "include_flowers": args.include_flowers,
