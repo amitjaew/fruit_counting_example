@@ -28,6 +28,13 @@ sources/L0/                               # COLMAP workspace
 The counting pipeline only reads `dense/0/sparse/*.bin` and
 `dense/0/images/`. The dense depth maps are not used.
 
+## Sample results
+
+<video src="sample_results.mp4" controls width="640"></video>
+
+`sample_results.mp4` is an annotated render of the L0 pipeline output, one
+frame per fruit ID overlaid in a stable color.
+
 ## Usage
 
 ```bash
