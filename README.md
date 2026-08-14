@@ -30,10 +30,9 @@ The counting pipeline only reads `dense/0/sparse/*.bin` and
 
 ## Sample results
 
-[Download/view sample_results.mp4](sample_results.mp4)
+![Sample results](sample_results.gif)
 
-`sample_results.mp4` is an annotated render of the L0 pipeline output, one
-frame per fruit ID overlaid in a stable color.
+Annotated render of the L0 pipeline output, one fruit ID per color.
 
 ## Usage
 
